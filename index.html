@@ -1,136 +1,328 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hitster Custom Player</title>
-    <!-- HTML5 QR Code Scanner Library -->
-    <script src="https://unpkg.com/html5-qrcode"></script>
-    <style>
-        body { font-family: sans-serif; background: #121212; color: white; text-align: center; padding: 20px; }
-        #login-section, #scanner-section { max-width: 500px; margin: 0 auto; }
-        button { background: #1DB954; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 50px; cursor: pointer; font-weight: bold; margin-top: 20px;}
-        button:hover { background: #1ed760; }
-        #reader { width: 100%; background: #222; margin-top: 20px; border-radius: 10px; overflow: hidden;}
-        #status { margin-top: 20px; font-size: 18px; font-weight: normal; min-height: 50px; color: #1DB954; }
-        .hidden { display: none; }
-    </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hitster Player</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background: #111;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+    margin: 0;
+    min-height: 100vh;
+    box-sizing: border-box;
+  }
+  h1 { margin-bottom: 1.5rem; }
+  button {
+    font-size: 1.05rem;
+    padding: 0.6rem 1.2rem;
+    margin: 0.4rem;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    background: #1db954;
+    color: #000;
+    font-weight: 600;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #video {
+    width: min(90vw, 420px);
+    border-radius: 12px;
+    background: #000;
+    transform: scaleX(-1); /* mirror, feels more natural when holding a card up */
+  }
+  #canvas { display: none; }
+  #controls { display: flex; gap: 0.5rem; margin-top: 1rem; }
+  #status {
+    margin-top: 1rem;
+    font-size: 1rem;
+    opacity: 0.85;
+    text-align: center;
+    max-width: 420px;
+    min-height: 1.4em;
+  }
+  #player-screen { display: none; flex-direction: column; align-items: center; }
+</style>
 </head>
 <body>
+  <h1>🎧 Hitster Player</h1>
 
-    <h1>Hitster Player 🎧</h1>
+  <!-- Step 1: log in with Spotify -->
+  <div id="login-screen">
+    <p>Mit deinem Spotify-Premium-Account einloggen:</p>
+    <button id="login-button">Mit Spotify verbinden</button>
+    <p style="max-width:380px; font-size:0.85rem; opacity:0.7;">
+      Erfordert ein Spotify-Premium-Konto. Jede:r loggt sich mit dem
+      eigenen Account ein.
+    </p>
+  </div>
 
-    <div id="login-section">
-        <p>Um Lieder direkt abzuspielen, musst du dich einmalig mit Spotify verbinden.</p>
-        <button id="login-btn">Mit Spotify einloggen</button>
+  <!-- Step 2: camera + playback controls (no title/artist ever shown) -->
+  <div id="player-screen">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+      <button id="pause-button" disabled>⏸ Pause</button>
+      <button id="stop-button" disabled>⏹ Stop</button>
     </div>
+    <div id="status">Verbinde …</div>
+  </div>
 
-    <div id="scanner-section" class="hidden">
-        <p>Scanne den QR-Code auf deiner Karte.</p>
-        <div id="reader"></div>
-        <div id="status">Bereit zum Scannen...</div>
-    </div>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+(function () {
+  "use strict";
 
-    <script>
-        // === KONFIGURATION ===
-        // 1. Trage hier deine Spotify Client ID ein:
-        const CLIENT_ID = '1ebdd25083a54609b5700cdb95717068'; 
-        
-        // Die Weiterleitungs-URL (entspricht der aktuellen URL deines Webservers)
-        const REDIRECT_URI = window.location.href.split('?')[0].split('#')[0];
-        
-        let accessToken = null;
-        let html5QrcodeScanner = null;
+  // Deine Spotify Client ID (aus dem App-Dashboard) - kein Secret, darf
+  // im clientseitigen Code stehen.
+  const CLIENT_ID = "1ebdd25083a54609b5700cdb95717068";
 
-        // Token aus der URL auslesen (wird von Spotify nach Login zurückgegeben)
-        const hash = window.location.hash;
-        if (hash) {
-            accessToken = new URLSearchParams(hash.substring(1)).get('access_token');
-            window.location.hash = ''; // URL im Browser aufräumen
+  // Must exactly match a Redirect URI configured in your Spotify app
+  // settings (https://developer.spotify.com/dashboard).
+  const REDIRECT_URI = window.location.origin + window.location.pathname;
+  const SCOPES = "streaming user-read-email user-read-private user-modify-playback-state";
+
+  const loginScreen = document.getElementById("login-screen");
+  const playerScreen = document.getElementById("player-screen");
+  const statusEl = document.getElementById("status");
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  const canvasCtx = canvas.getContext("2d", { willReadFrequently: true });
+  const pauseButton = document.getElementById("pause-button");
+  const stopButton = document.getElementById("stop-button");
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  // --- PKCE helpers (no client secret needed) -------------------------------
+
+  function randomString(length) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const values = crypto.getRandomValues(new Uint8Array(length));
+    return Array.from(values, (v) => chars[v % chars.length]).join("");
+  }
+
+  async function sha256Base64Url(plain) {
+    const data = new TextEncoder().encode(plain);
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    const bytes = new Uint8Array(digest);
+    let binary = "";
+    bytes.forEach((b) => { binary += String.fromCharCode(b); });
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function redirectToLogin() {
+    const codeVerifier = randomString(64);
+    sessionStorage.setItem("pkce_code_verifier", codeVerifier);
+
+    const codeChallenge = await sha256Base64Url(codeVerifier);
+    const params = new URLSearchParams({
+      client_id: CLIENT_ID,
+      response_type: "code",
+      redirect_uri: REDIRECT_URI,
+      scope: SCOPES,
+      code_challenge_method: "S256",
+      code_challenge: codeChallenge,
+    });
+    window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+  }
+
+  async function exchangeCodeForToken(code) {
+    const codeVerifier = sessionStorage.getItem("pkce_code_verifier");
+
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: codeVerifier,
+      }),
+    });
+    if (!response.ok) throw new Error(`Token-Austausch fehlgeschlagen (${response.status})`);
+    return response.json();
+  }
+
+  async function refreshAccessToken() {
+    const refreshToken = sessionStorage.getItem("spotify_refresh_token");
+    if (!refreshToken) return null;
+
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    storeTokens(data);
+    return data.access_token;
+  }
+
+  function storeTokens(data) {
+    sessionStorage.setItem("spotify_access_token", data.access_token);
+    if (data.refresh_token) sessionStorage.setItem("spotify_refresh_token", data.refresh_token);
+  }
+
+  // --- App bootstrap ---------------------------------------------------------
+
+  let accessToken = sessionStorage.getItem("spotify_access_token");
+
+  document.getElementById("login-button").addEventListener("click", () => {
+    redirectToLogin();
+  });
+
+  async function init() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get("code");
+    const authError = urlParams.get("error");
+
+    if (authError) {
+      setStatus("Anmeldung fehlgeschlagen: " + authError);
+      return;
+    }
+
+    if (code) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      try {
+        const data = await exchangeCodeForToken(code);
+        storeTokens(data);
+        accessToken = data.access_token;
+      } catch (err) {
+        setStatus("Fehler beim Login: " + err.message);
+        return;
+      }
+    }
+
+    if (!accessToken) return; // stay on the login screen
+
+    loginScreen.style.display = "none";
+    playerScreen.style.display = "flex";
+    setStatus("Verbinde mit Spotify …");
+    startPlayer();
+  }
+
+  // --- Spotify Web Playback SDK ------------------------------------------------
+
+  let player = null;
+  let deviceId = null;
+
+  window.onSpotifyWebPlaybackSDKReady = () => {
+    // Only starts once init() has confirmed we have a token; safe to define
+    // the callback unconditionally, it's simply not used until then.
+  };
+
+  function startPlayer() {
+    player = new Spotify.Player({
+      name: "Hitster Player",
+      getOAuthToken: async (callback) => {
+        callback(accessToken);
+      },
+      volume: 0.8,
+    });
+
+    player.addListener("ready", ({ device_id }) => {
+      deviceId = device_id;
+      pauseButton.disabled = false;
+      stopButton.disabled = false;
+      setStatus("Bereit – QR-Code vor die Kamera halten.");
+      startCameraScanning();
+    });
+
+    player.addListener("not_ready", () => setStatus("Player getrennt."));
+    player.addListener("initialization_error", ({ message }) => setStatus("Initialisierungsfehler: " + message));
+    player.addListener("authentication_error", () => setStatus("Login abgelaufen, bitte Seite neu laden."));
+    player.addListener("account_error", () => setStatus("Konto-Fehler – ist dein Account Spotify Premium?"));
+
+    pauseButton.addEventListener("click", () => player.togglePlay());
+    stopButton.addEventListener("click", () => player.pause());
+
+    player.connect();
+  }
+
+  async function playTrack(trackId, attempt = 1) {
+    const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ uris: [`spotify:track:${trackId}`] }),
+    });
+
+    if (response.status === 401 && attempt === 1) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        accessToken = newToken;
+        return playTrack(trackId, 2);
+      }
+    }
+
+    if (!response.ok && response.status !== 204) {
+      throw new Error(`Wiedergabe fehlgeschlagen (${response.status})`);
+    }
+  }
+
+  // --- QR code scanning (camera) -----------------------------------------------
+
+  let lastScannedId = null;
+  let ignoreUntil = 0;
+
+  function extractTrackId(text) {
+    // Matches both open.spotify.com/track/<id> links and spotify:track:<id> URIs.
+    const match = text.match(/track[/:]([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+
+  async function startCameraScanning() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+      });
+      video.srcObject = stream;
+      requestAnimationFrame(scanFrame);
+    } catch (err) {
+      setStatus("Kamera-Zugriff fehlgeschlagen: " + err.message);
+    }
+  }
+
+  function scanFrame() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvasCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = canvasCtx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+      if (code) {
+        const trackId = extractTrackId(code.data);
+        const now = Date.now();
+        if (trackId && (trackId !== lastScannedId || now > ignoreUntil)) {
+          lastScannedId = trackId;
+          ignoreUntil = now + 4000; // debounce: ignore the same card for 4s
+          setStatus("Song wird abgespielt …");
+          playTrack(trackId).catch((err) => setStatus("Fehler: " + err.message));
         }
+      }
+    }
+    requestAnimationFrame(scanFrame);
+  }
 
-        // Benutzeroberfläche steuern
-        if (!accessToken) {
-            document.getElementById('login-btn').addEventListener('click', () => {
-                // Wir fordern die Berechtigung an, die Musikwiedergabe zu steuern
-                const scope = 'user-modify-playback-state';
-                const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scope)}`;
-                window.location.href = authUrl;
-            });
-        } else {
-            document.getElementById('login-section').classList.add('hidden');
-            document.getElementById('scanner-section').classList.remove('hidden');
-            startScanner();
-        }
-
-        function startScanner() {
-            html5QrcodeScanner = new Html5QrcodeScanner(
-                "reader", 
-                { fps: 10, qrbox: {width: 250, height: 250} }, 
-                false
-            );
-            html5QrcodeScanner.render(onScanSuccess);
-        }
-
-        let isPlaying = false; 
-
-        function onScanSuccess(decodedText) {
-            if (isPlaying) return; // Verhindert, dass der Code 10x pro Sekunde feuert
-
-            // Extrahiere die Spotify Track-ID aus der URL (z.B. https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT...)
-            let trackUri = null;
-            if (decodedText.includes("spotify.com/track/")) {
-                const trackId = decodedText.split("track/")[1].split("?")[0];
-                trackUri = `spotify:track:${trackId}`;
-            } else if (decodedText.startsWith("spotify:track:")) {
-                trackUri = decodedText;
-            }
-
-            if (trackUri) {
-                isPlaying = true;
-                document.getElementById('status').innerText = "Wird geladen... ⏳";
-                
-                // Scanner kurz pausieren
-                html5QrcodeScanner.pause();
-                
-                playSpotifyTrack(trackUri);
-                
-                // Nach 4 Sekunden Scanner für die nächste Karte wieder freigeben
-                setTimeout(() => {
-                    isPlaying = false;
-                    html5QrcodeScanner.resume();
-                    document.getElementById('status').innerText = "Bereit für die nächste Karte!";
-                }, 4000);
-            } else {
-                document.getElementById('status').innerText = "Das ist kein gültiger Spotify-Link!";
-            }
-        }
-
-        async function playSpotifyTrack(uri) {
-            try {
-                const response = await fetch('https://api.spotify.com/v1/me/player/play', {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `Bearer ${accessToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ uris: [uri] })
-                });
-
-                if (response.ok || response.status === 204) {
-                    document.getElementById('status').innerText = "Lied wird abgespielt! 🎶";
-                } else {
-                    const data = await response.json();
-                    if (data.error && data.error.reason === 'NO_ACTIVE_DEVICE') {
-                        document.getElementById('status').innerHTML = "<span style='color:red'><b>Fehler:</b> Bitte öffne die Spotify-App im Hintergrund deines Handys und spiele kurz einen Song an, damit das Gerät 'aktiv' ist!</span>";
-                    } else {
-                        document.getElementById('status').innerText = "Fehler beim Abspielen.";
-                    }
-                }
-            } catch (error) {
-                document.getElementById('status').innerText = "Netzwerkfehler.";
-            }
-        }
-    </script>
+  init();
+})();
+</script>
 </body>
 </html>
