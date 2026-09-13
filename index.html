@@ -34,10 +34,33 @@
     width: min(90vw, 420px);
     border-radius: 12px;
     background: #000;
-    transform: scaleX(-1); /* mirror, feels more natural when holding a card up */
   }
   #canvas { display: none; }
-  #controls { display: flex; gap: 0.5rem; margin-top: 1rem; }
+  #scan-view, #now-playing-view { display: flex; flex-direction: column; align-items: center; }
+  #now-playing-view { display: none; }
+  #equalizer {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 8px;
+    height: 90px;
+    width: min(90vw, 420px);
+  }
+  #equalizer span {
+    width: 14px;
+    background: #1db954;
+    border-radius: 4px;
+    animation: bounce 1s ease-in-out infinite;
+  }
+  #equalizer span:nth-child(1) { animation-delay: 0s; }
+  #equalizer span:nth-child(2) { animation-delay: 0.2s; }
+  #equalizer span:nth-child(3) { animation-delay: 0.4s; }
+  #equalizer span:nth-child(4) { animation-delay: 0.6s; }
+  @keyframes bounce {
+    0%, 100% { height: 15%; }
+    50% { height: 100%; }
+  }
+  #controls { display: flex; gap: 0.5rem; margin-top: 1.2rem; }
   #status {
     margin-top: 1rem;
     font-size: 1rem;
@@ -68,13 +91,20 @@
     <button id="copy-redirect-uri" style="font-size:0.8rem; padding:0.3rem 0.7rem; margin-top:0.4rem;">In Zwischenablage kopieren</button>
   </div>
 
-  <!-- Step 2: camera + playback controls (no title/artist ever shown) -->
+  <!-- Step 2: camera + playback (no title/artist ever shown) -->
   <div id="player-screen">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="canvas"></canvas>
-    <div id="controls">
-      <button id="pause-button" disabled>⏸ Pause</button>
-      <button id="stop-button" disabled>⏹ Stop</button>
+    <div id="scan-view">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+    </div>
+    <div id="now-playing-view">
+      <div id="equalizer">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div id="controls">
+        <button id="pause-button">⏸ Pause</button>
+        <button id="next-button">⏭ Nächster Song</button>
+      </div>
     </div>
     <div id="status">Verbinde …</div>
   </div>
@@ -96,15 +126,27 @@
 
   const loginScreen = document.getElementById("login-screen");
   const playerScreen = document.getElementById("player-screen");
+  const scanView = document.getElementById("scan-view");
+  const nowPlayingView = document.getElementById("now-playing-view");
   const statusEl = document.getElementById("status");
   const video = document.getElementById("video");
   const canvas = document.getElementById("canvas");
   const canvasCtx = canvas.getContext("2d", { willReadFrequently: true });
   const pauseButton = document.getElementById("pause-button");
-  const stopButton = document.getElementById("stop-button");
+  const nextButton = document.getElementById("next-button");
 
   function setStatus(text) {
     statusEl.textContent = text;
+  }
+
+  function showScanView() {
+    scanView.style.display = "flex";
+    nowPlayingView.style.display = "none";
+  }
+
+  function showNowPlayingView() {
+    scanView.style.display = "none";
+    nowPlayingView.style.display = "flex";
   }
 
   // --- PKCE helpers (no client secret needed) -------------------------------
@@ -253,8 +295,6 @@
 
     player.addListener("ready", ({ device_id }) => {
       deviceId = device_id;
-      pauseButton.disabled = false;
-      stopButton.disabled = false;
       setStatus("Bereit – QR-Code vor die Kamera halten.");
       startCameraScanning();
     });
@@ -264,8 +304,18 @@
     player.addListener("authentication_error", () => setStatus("Login abgelaufen, bitte Seite neu laden."));
     player.addListener("account_error", () => setStatus("Konto-Fehler – ist dein Account Spotify Premium?"));
 
+    // Keeps the Pause/Play button label in sync with actual playback state,
+    // however it changed (our button, another Spotify app, etc.).
+    player.addListener("player_state_changed", (state) => {
+      if (!state) return;
+      pauseButton.textContent = state.paused ? "▶ Play" : "⏸ Pause";
+    });
+
     pauseButton.addEventListener("click", () => player.togglePlay());
-    stopButton.addEventListener("click", () => player.pause());
+    nextButton.addEventListener("click", async () => {
+      await player.pause();
+      startCameraScanning();
+    });
 
     player.connect();
   }
@@ -295,8 +345,8 @@
 
   // --- QR code scanning (camera) -----------------------------------------------
 
-  let lastScannedId = null;
-  let ignoreUntil = 0;
+  let cameraStream = null;
+  let scanningActive = false;
 
   function extractTrackId(text) {
     // Matches both open.spotify.com/track/<id> links and spotify:track:<id> URIs.
@@ -305,34 +355,46 @@
   }
 
   async function startCameraScanning() {
+    showScanView();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      });
-      video.srcObject = stream;
+      if (!cameraStream) {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+        });
+        video.srcObject = cameraStream;
+      }
+      scanningActive = true;
       requestAnimationFrame(scanFrame);
     } catch (err) {
       setStatus("Kamera-Zugriff fehlgeschlagen: " + err.message);
     }
   }
 
+  function stopCameraScanning() {
+    scanningActive = false;
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+      cameraStream = null;
+    }
+  }
+
   function scanFrame() {
+    if (!scanningActive) return; // camera was stopped - don't schedule another frame
+
     if (video.readyState === video.HAVE_ENOUGH_DATA) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       canvasCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = canvasCtx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, imageData.width, imageData.height);
+      const trackId = code ? extractTrackId(code.data) : null;
 
-      if (code) {
-        const trackId = extractTrackId(code.data);
-        const now = Date.now();
-        if (trackId && (trackId !== lastScannedId || now > ignoreUntil)) {
-          lastScannedId = trackId;
-          ignoreUntil = now + 4000; // debounce: ignore the same card for 4s
-          setStatus("Song wird abgespielt …");
-          playTrack(trackId).catch((err) => setStatus("Fehler: " + err.message));
-        }
+      if (trackId) {
+        stopCameraScanning();
+        showNowPlayingView();
+        setStatus("Song wird abgespielt …");
+        playTrack(trackId).catch((err) => setStatus("Fehler: " + err.message));
+        return;
       }
     }
     requestAnimationFrame(scanFrame);
