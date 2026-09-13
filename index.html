@@ -271,18 +271,39 @@
     loginScreen.style.display = "none";
     playerScreen.style.display = "flex";
     setStatus("Verbinde mit Spotify …");
-    startPlayer();
+    tokenReady = true;
+    maybeStartPlayer();
   }
 
   // --- Spotify Web Playback SDK ------------------------------------------------
 
   let player = null;
   let deviceId = null;
+  let sdkReady = false;
+  let tokenReady = false;
+
+  function maybeStartPlayer() {
+    if (sdkReady && tokenReady && !player) {
+      startPlayer();
+    }
+  }
 
   window.onSpotifyWebPlaybackSDKReady = () => {
-    // Only starts once init() has confirmed we have a token; safe to define
-    // the callback unconditionally, it's simply not used until then.
+    sdkReady = true;
+    maybeStartPlayer();
   };
+
+  // If the SDK script never loads (e.g. blocked by an ad-/privacy-blocker,
+  // since "sdk.scdn.co" is sometimes flagged) we'd otherwise hang forever
+  // on "Verbinde mit Spotify …" with no explanation.
+  setTimeout(() => {
+    if (!sdkReady) {
+      setStatus(
+        "Spotify Player konnte nicht geladen werden. Falls du einen Werbe-/" +
+        "Tracking-Blocker nutzt, bitte für diese Seite deaktivieren und neu laden."
+      );
+    }
+  }, 8000);
 
   function startPlayer() {
     player = new Spotify.Player({
