@@ -34,3 +34,12 @@ oder `git clone` per SSH), Document Root der Domain auf den Ordner mit
 - Login ok, keine Wiedergabe → kein Premium-Account.
 - Seite hängt bei "Verbinde mit Spotify…" → Ad-/Trackingblocker blockiert
   `sdk.scdn.co`.
+
+## Datenschutz
+
+- Impressum und Datenschutzerklärung liegen zentral auf `start.icken.eu` (`impressum.html`, `datenschutz.html`) und sind im Footer der Seite verlinkt.
+- Beim Aufruf der Seite werden keine externen Server kontaktiert: jsQR liegt lokal unter `vendor/jsqr/` (Apache-2.0).
+- Das Spotify-Web-Playback-SDK (`sdk.scdn.co`) wird erst **nach dem Login** per `loadSpotifySdk()` nachgeladen. Vor dem Klick auf „Mit Spotify verbinden“ steht ein Datenschutzhinweis auf der Login-Seite.
+- Tokens liegen nur im `sessionStorage`, nichts davon geht an unseren Server. Die Kamerabilder werden nur lokal ausgewertet.
+- Wer Scopes ändert, muss den Abschnitt „Hitster“ in der Datenschutzerklärung anpassen (aktuell: `streaming user-read-email user-read-private user-modify-playback-state`).
+- Der Footer enthält „Abmelden“ (löscht die Tokens im `sessionStorage`) und einen Link zum Widerruf des App-Zugriffs unter <https://www.spotify.com/account/apps/>. Die Spotify Developer Policy verlangt einen leicht erreichbaren Weg, die Verbindung zu trennen, und eine Datenschutzerklärung (die zentrale auf `start.icken.eu`).

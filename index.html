@@ -73,6 +73,9 @@
     min-height: 1.4em;
   }
   #player-screen { display: none; flex-direction: column; align-items: center; }
+  #privacy-note { max-width: 420px; font-size: 0.85rem; opacity: 0.8; }
+  a { color: #7fe3a2; }
+  footer { margin-top: auto; padding-top: 2rem; font-size: 0.85rem; opacity: 0.8; display: flex; gap: 1rem; }
 </style>
 </head>
 <body>
@@ -81,6 +84,12 @@
   <!-- Step 1: log in with Spotify -->
   <div id="login-screen">
     <p>Mit deinem Spotify-Premium-Account einloggen:</p>
+    <p id="privacy-note">
+      Beim Klick auf „Mit Spotify verbinden“ wirst du zu Spotify weitergeleitet und
+      danach wird der Spotify-Player von Spotify-Servern geladen. Dabei erhält Spotify
+      deine IP-Adresse und Browserdaten. Wir speichern keine Spotify-Daten auf unserem Server.
+      Mehr dazu in der <a href="https://start.icken.eu/datenschutz.html#hitster">Datenschutzerklärung</a>.
+    </p>
     <button id="login-button">Mit Spotify verbinden</button>
     <div id="login-status" style="margin-top:0.8rem; color:#ff6b6b; font-size:0.9rem; max-width:420px;"></div>
     <p style="max-width:420px; font-size:0.85rem; opacity:0.7;">
@@ -113,8 +122,15 @@
     <div id="status">Verbinde …</div>
   </div>
 
-<script src="https://sdk.scdn.co/spotify-player.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <footer>
+    <a href="https://start.icken.eu/impressum.html">Impressum</a>
+    <a href="https://start.icken.eu/datenschutz.html">Datenschutz</a>
+    <a href="#" id="logout-link">Abmelden</a>
+    <a href="https://www.spotify.com/account/apps/" target="_blank" rel="noopener noreferrer">Spotify-Zugriff widerrufen</a>
+  </footer>
+
+<!-- jsQR liegt lokal (vendor/), kein CDN. Das Spotify-SDK wird erst nach dem Login nachgeladen (siehe loadSpotifySdk). -->
+<script src="vendor/jsqr/jsQR.js"></script>
 <script>
 (function () {
   "use strict";
@@ -261,6 +277,14 @@
     );
   }
 
+  // Removes all locally stored Spotify tokens and reloads the page. The access of this
+  // app can additionally be revoked at https://www.spotify.com/account/apps/ (footer link).
+  document.getElementById("logout-link").addEventListener("click", (event) => {
+    event.preventDefault();
+    sessionStorage.clear();
+    window.location.reload();
+  });
+
   document.getElementById("login-button").addEventListener("click", () => {
     setLoginStatus("");
     redirectToLogin().catch((err) => {
@@ -297,6 +321,7 @@
     playerScreen.style.display = "flex";
     setStatus("Verbinde mit Spotify …");
     tokenReady = true;
+    loadSpotifySdk();
     maybeStartPlayer();
   }
 
@@ -318,17 +343,32 @@
     maybeStartPlayer();
   };
 
-  // If the SDK script never loads (e.g. blocked by an ad-/privacy-blocker,
-  // since "sdk.scdn.co" is sometimes flagged) we'd otherwise hang forever
-  // on "Verbinde mit Spotify …" with no explanation.
-  setTimeout(() => {
-    if (!sdkReady) {
-      setStatus(
-        "Spotify Player konnte nicht geladen werden. Falls du einen Werbe-/" +
-        "Tracking-Blocker nutzt, bitte für diese Seite deaktivieren und neu laden."
-      );
-    }
-  }, 8000);
+  /**
+   * Loads the Spotify Web Playback SDK on demand. This only happens after the
+   * user has clicked "Mit Spotify verbinden" and is logged in, so merely opening
+   * the page does not send the visitor's IP address to Spotify.
+   * @returns {void}
+   */
+  function loadSpotifySdk() {
+    if (document.getElementById("spotify-sdk")) return;
+    const script = document.createElement("script");
+    script.id = "spotify-sdk";
+    script.src = "https://sdk.scdn.co/spotify-player.js";
+    script.async = true;
+    document.body.appendChild(script);
+
+    // If the SDK script never loads (e.g. blocked by an ad-/privacy-blocker,
+    // since "sdk.scdn.co" is sometimes flagged) we'd otherwise hang forever
+    // on "Verbinde mit Spotify …" with no explanation.
+    setTimeout(() => {
+      if (!sdkReady) {
+        setStatus(
+          "Spotify Player konnte nicht geladen werden. Falls du einen Werbe-/" +
+          "Tracking-Blocker nutzt, bitte für diese Seite deaktivieren und neu laden."
+        );
+      }
+    }, 8000);
+  }
 
   function startPlayer() {
     player = new Spotify.Player({
